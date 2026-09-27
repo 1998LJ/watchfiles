@@ -120,6 +120,54 @@ while True:
     finally:
         if child.poll() is None:
             child.kill()
+            child.wait()
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='real Windows control-event test')
+def test_ctrl_break_event_reaches_process_group(tmp_path: Path):
+    marker = tmp_path / 'break-signal.txt'
+    ready = tmp_path / 'break-ready.txt'
+    child_code = """
+import signal
+import sys
+import time
+from pathlib import Path
+
+marker = Path(sys.argv[1])
+ready = Path(sys.argv[2])
+
+def handle_signal(signum, frame):
+    marker.write_text(str(signum))
+    raise SystemExit(0)
+
+signal.signal(signal.SIGBREAK, handle_signal)
+ready.write_text('ready')
+while True:
+    time.sleep(0.05)
+"""
+
+    child = subprocess.Popen(
+        [sys.executable, '-c', child_code, str(marker), str(ready)],
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists():
+            if child.poll() is not None:
+                pytest.fail(f'child exited before becoming ready: {child.returncode}')
+            if time.monotonic() >= deadline:
+                pytest.fail('child did not become ready')
+            time.sleep(0.05)
+
+        os.kill(child.pid, signal.CTRL_BREAK_EVENT)
+        child.wait(timeout=2)
+
+        assert child.returncode == 0
+        assert marker.read_text() == str(signal.SIGBREAK)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
 
 
 def test_dead_callback(mocker, mock_rust_notify: 'MockRustType'):
