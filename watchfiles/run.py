@@ -338,12 +338,12 @@ class CombinedProcess:
             logger.debug('stopping process...')
 
             if sys.platform == 'win32':
-                if isinstance(self._p, subprocess.Popen):
-                    os.kill(self.pid, signal.CTRL_BREAK_EVENT)
-                else:
+                if isinstance(self._p, SpawnProcess):
                     # multiprocessing does not expose Windows process-group creation,
                     # so a targeted console control event cannot be sent safely.
                     self._p.terminate()
+                else:
+                    os.kill(self.pid, signal.CTRL_BREAK_EVENT)
             else:
                 os.kill(self.pid, signal.SIGINT)
 
