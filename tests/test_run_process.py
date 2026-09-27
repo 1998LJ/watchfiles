@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from multiprocessing.context import SpawnProcess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -64,16 +65,63 @@ def test_alive_terminates(mocker, mock_rust_notify: 'MockRustType', caplog):
     assert 'sleeping for 0.01 seconds before watching for changes' in caplog.text
 
 
-def test_stop_uses_ctrl_c_event_on_windows(mocker):
+def test_stop_terminates_function_process_on_windows(mocker):
     process = CombinedProcess(FakeProcess())
     mocker.patch('watchfiles.run.sys.platform', 'win32')
-    ctrl_c_event = 123
-    mocker.patch.object(signal, 'CTRL_C_EVENT', ctrl_c_event, create=True)
+    mock_terminate = mocker.patch.object(process._p, 'terminate', create=True)
     mock_kill = mocker.patch('watchfiles.run.os.kill')
 
     process.stop()
 
-    mock_kill.assert_called_once_with(process.pid, ctrl_c_event)
+    mock_terminate.assert_called_once_with()
+    mock_kill.assert_not_called()
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='real Windows control-event test')
+def test_command_stop_delivers_ctrl_break_event(tmp_path: Path):
+    marker = tmp_path / 'signal.txt'
+    ready = tmp_path / 'ready.txt'
+    child = tmp_path / 'child.py'
+    child.write_text(
+        """
+import signal
+import sys
+import time
+from pathlib import Path
+
+marker = Path(sys.argv[1])
+ready = Path(sys.argv[2])
+
+def handle_signal(signum, frame):
+    marker.write_text(str(signum))
+    raise SystemExit(0)
+
+signal.signal(signal.SIGBREAK, handle_signal)
+ready.write_text('ready')
+while True:
+    time.sleep(0.05)
+"""
+    )
+
+    command = subprocess.list2cmdline([sys.executable, str(child), str(marker), str(ready)])
+    process = start_process(command, 'command', (), {})
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists():
+            if not process.is_alive():
+                pytest.fail(f'child exited before becoming ready: {process.exitcode}')
+            if time.monotonic() >= deadline:
+                pytest.fail('child did not become ready')
+            time.sleep(0.05)
+
+        process.stop(sigint_timeout=2, sigkill_timeout=1)
+
+        assert process.exitcode == 0
+        assert marker.read_text() == str(signal.SIGBREAK)
+    finally:
+        if process.is_alive():
+            process._p.kill()
+            process.join(1)
 
 
 def test_dead_callback(mocker, mock_rust_notify: 'MockRustType'):
@@ -131,7 +179,7 @@ def test_sigint_timeout(mocker, mock_rust_notify: 'MockRustType', caplog):
     assert run_process('/x/y/z', target=object(), debounce=5, step=1, sigint_timeout='sigint_timeout') == 1
     assert mock_spawn_process.call_count == 2
     assert mock_kill.call_count == 2
-    assert "SIGINT timed out after 'sigint_timeout' seconds" in caplog.text
+    assert "graceful stop timed out after 'sigint_timeout' seconds" in caplog.text
 
 
 def test_start_process(mocker):
@@ -258,7 +306,8 @@ def test_command(mocker, mock_rust_notify: 'MockRustType', caplog):
     assert run_process('/x/y/z', target='echo foobar', debounce=5, step=1) == 1
     assert mock_spawn_process.call_count == 0
     assert mock_popen.call_count == 2
-    mock_popen.assert_called_with(['echo', 'foobar'])
+    expected_popen_kwargs = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == 'win32' else {}
+    mock_popen.assert_called_with(['echo', 'foobar'], **expected_popen_kwargs)
     assert mock_kill.call_count == 2  # kill in loop + final kill
     assert 'watchfiles.main DEBUG: running "echo foobar" as command\n' in caplog.text
 
