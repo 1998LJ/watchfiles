@@ -317,9 +317,7 @@ def test_command(mocker, mock_rust_notify: 'MockRustType', caplog):
     assert mock_spawn_process.call_count == 0
     assert mock_popen.call_count == 2
     if sys.platform == 'win32':
-        mock_popen.assert_called_with(
-            ['echo', 'foobar'], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-        )
+        mock_popen.assert_called_with(['echo', 'foobar'], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
     else:
         mock_popen.assert_called_with(['echo', 'foobar'])
     assert mock_kill.call_count == 2  # kill in loop + final kill
@@ -337,9 +335,7 @@ def test_command_with_args(mocker, mock_rust_notify: 'MockRustType', caplog):
     assert mock_spawn_process.call_count == 0
     assert mock_popen.call_count == 2
     if sys.platform == 'win32':
-        mock_popen.assert_called_with(
-            ['echo', 'foobar'], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-        )
+        mock_popen.assert_called_with(['echo', 'foobar'], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
     else:
         mock_popen.assert_called_with(['echo', 'foobar'])
     assert mock_kill.call_count == 2  # kill in loop + final kill
