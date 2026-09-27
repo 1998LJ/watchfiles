@@ -49,6 +49,12 @@ class FakeProcess(SpawnProcess):
     def join(self, wait):
         pass
 
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
 
 def test_alive_terminates(mocker, mock_rust_notify: 'MockRustType', caplog):
     caplog.set_level('DEBUG', 'watchfiles')
@@ -60,7 +66,7 @@ def test_alive_terminates(mocker, mock_rust_notify: 'MockRustType', caplog):
     assert run_process('/x/y/z', target=os.getcwd, debounce=5, grace_period=0.01, step=1) == 1
     assert mock_spawn_process.call_count == 2
     assert mock_popen.call_count == 0
-    assert mock_kill.call_count == 2  # kill in loop + final kill
+    assert mock_kill.call_count == (0 if sys.platform == 'win32' else 2)
     assert 'watchfiles.main DEBUG: running "<built-in function getcwd>" as function\n' in caplog.text
     assert 'sleeping for 0.01 seconds before watching for changes' in caplog.text
 
@@ -224,7 +230,7 @@ def test_function_list(mocker, mock_rust_notify: 'MockRustType'):
 
     assert run_process('/x/y/z', target=['os.getcwd'], debounce=5, step=1) == 1
     assert mock_spawn_process.call_count == 2
-    assert mock_kill.call_count == 2  # kill in loop + final kill
+    assert mock_kill.call_count == (0 if sys.platform == 'win32' else 2)
 
 
 async def test_async_alive_terminates(mocker, mock_rust_notify: 'MockRustType'):
@@ -261,7 +267,7 @@ async def test_async_sync_callback(mocker, mock_rust_notify: 'MockRustType'):
     )
     assert v == 2
     assert mock_spawn_process.call_count == 3
-    assert mock_kill.call_count == 3
+    assert mock_kill.call_count == (0 if sys.platform == 'win32' else 3)
     assert callback_calls == [{(Change.added, '/path/to/foo.py')}, {(Change.modified, '/path/to/bar.py')}]
 
 
@@ -322,7 +328,8 @@ def test_command_with_args(mocker, mock_rust_notify: 'MockRustType', caplog):
     assert run_process('/x/y/z', target='echo foobar', args=(1, 2), target_type='command', debounce=5, step=1) == 1
     assert mock_spawn_process.call_count == 0
     assert mock_popen.call_count == 2
-    mock_popen.assert_called_with(['echo', 'foobar'])
+    expected_popen_kwargs = {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == 'win32' else {}
+    mock_popen.assert_called_with(['echo', 'foobar'], **expected_popen_kwargs)
     assert mock_kill.call_count == 2  # kill in loop + final kill
     assert 'watchfiles.main WARNING: ignoring args and kwargs for "command" target\n' in caplog.text
 
