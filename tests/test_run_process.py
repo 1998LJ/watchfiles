@@ -165,7 +165,7 @@ def test_alive_doesnt_terminate(mocker, mock_rust_notify: 'MockRustType'):
 
     assert run_process('/x/y/z', target=object(), debounce=5, step=1) == 1
     assert mock_spawn_process.call_count == 2
-    assert mock_kill.call_count == 4  # 2 kills in loop (graceful and termination) + 2 final kills
+    assert mock_kill.call_count == 2  # graceful SIGINT only; forced termination uses Process.kill()
 
 
 class FakeProcessTimeout(FakeProcess):
