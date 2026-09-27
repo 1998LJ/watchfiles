@@ -245,7 +245,7 @@ async def test_async_alive_terminates(mocker, mock_rust_notify: 'MockRustType'):
 
     assert await arun_process('/x/y/async', target=object(), callback=c, debounce=5, step=1) == 1
     assert mock_spawn_process.call_count == 2
-    assert mock_kill.call_count == 2  # kill in loop + final kill
+    assert mock_kill.call_count == (0 if sys.platform == 'win32' else 2)
     assert callback_calls == [{(Change.added, '/path/to/foobar.py')}]
 
 
