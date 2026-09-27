@@ -123,7 +123,7 @@ while True:
         process.stop(sigint_timeout=2, sigkill_timeout=1)
 
         assert process.exitcode == 0
-        assert marker.read_text() == str(signal.SIGBREAK)
+        assert marker.read_text() == str(int(signal.SIGBREAK))
     finally:
         if process.is_alive():
             process._p.kill()
