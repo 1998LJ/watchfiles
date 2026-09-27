@@ -340,8 +340,8 @@ class CombinedProcess:
             if sys.platform == 'win32':
                 if isinstance(self._p, SpawnProcess):
                     # multiprocessing does not create a new Windows process group,
-                    # so a targeted console control event cannot be delivered safely.
-                    self._p.terminate()
+                    # so preserve the existing forceful Windows termination behavior.
+                    os.kill(self.pid, signal.SIGTERM)
                 else:
                     os.kill(self.pid, signal.CTRL_BREAK_EVENT)
             else:
@@ -357,7 +357,7 @@ class CombinedProcess:
             if self.exitcode is None:
                 logger.warning('process has not terminated, force killing')
                 if sys.platform == 'win32':
-                    self._p.kill()
+                    os.kill(self.pid, signal.SIGTERM)
                 else:
                     os.kill(self.pid, signal.SIGKILL)
                 self.join(sigkill_timeout)
