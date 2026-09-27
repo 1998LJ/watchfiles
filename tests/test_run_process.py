@@ -65,68 +65,33 @@ def test_alive_terminates(mocker, mock_rust_notify: 'MockRustType', caplog):
     assert 'sleeping for 0.01 seconds before watching for changes' in caplog.text
 
 
-def test_stop_uses_ctrl_c_event_on_windows(mocker):
+def test_stop_uses_sigterm_for_spawn_process_on_windows(mocker):
     process = CombinedProcess(FakeProcess())
     mocker.patch('watchfiles.run.sys.platform', 'win32')
-    ctrl_c_event = 123
-    mocker.patch.object(signal, 'CTRL_C_EVENT', ctrl_c_event, create=True)
     mock_kill = mocker.patch('watchfiles.run.os.kill')
 
     process.stop()
 
-    mock_kill.assert_called_once_with(process.pid, ctrl_c_event)
+    mock_kill.assert_called_once_with(process.pid, signal.SIGTERM)
+
+
+def test_stop_retries_sigterm_if_windows_spawn_process_does_not_exit(mocker):
+    process = CombinedProcess(FakeProcess(exitcode=None))
+    mocker.patch('watchfiles.run.sys.platform', 'win32')
+    mock_kill = mocker.patch('watchfiles.run.os.kill')
+
+    process.stop()
+
+    assert mock_kill.call_args_list == [
+        mocker.call(process.pid, signal.SIGTERM),
+        mocker.call(process.pid, signal.SIGTERM),
+    ]
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='real Windows control-event test')
-def test_stop_delivers_ctrl_c_event_to_process_group(tmp_path: Path):
+def test_stop_delivers_ctrl_break_event_to_command_process(tmp_path: Path):
     marker = tmp_path / 'signal.txt'
     ready = tmp_path / 'ready.txt'
-    child_code = """
-import signal
-import sys
-import time
-from pathlib import Path
-
-marker = Path(sys.argv[1])
-ready = Path(sys.argv[2])
-
-def handle_signal(signum, frame):
-    marker.write_text(str(signum))
-    raise SystemExit(0)
-
-signal.signal(signal.SIGINT, handle_signal)
-ready.write_text('ready')
-while True:
-    time.sleep(0.05)
-"""
-
-    child = subprocess.Popen(
-        [sys.executable, '-c', child_code, str(marker), str(ready)],
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-    )
-    try:
-        deadline = time.monotonic() + 5
-        while not ready.exists():
-            if child.poll() is not None:
-                pytest.fail(f'child exited before becoming ready: {child.returncode}')
-            if time.monotonic() >= deadline:
-                pytest.fail('child did not become ready')
-            time.sleep(0.05)
-
-        CombinedProcess(child).stop(sigint_timeout=2, sigkill_timeout=1)
-
-        assert child.returncode == 0
-        assert marker.read_text() == str(signal.SIGINT)
-    finally:
-        if child.poll() is None:
-            child.kill()
-            child.wait()
-
-
-@pytest.mark.skipif(sys.platform != 'win32', reason='real Windows control-event test')
-def test_ctrl_break_event_reaches_process_group(tmp_path: Path):
-    marker = tmp_path / 'break-signal.txt'
-    ready = tmp_path / 'break-ready.txt'
     child_code = """
 import signal
 import sys
@@ -159,8 +124,7 @@ while True:
                 pytest.fail('child did not become ready')
             time.sleep(0.05)
 
-        os.kill(child.pid, signal.CTRL_BREAK_EVENT)
-        child.wait(timeout=2)
+        CombinedProcess(child).stop(sigint_timeout=2, sigkill_timeout=1)
 
         assert child.returncode == 0
         assert marker.read_text() == str(signal.SIGBREAK)
@@ -352,7 +316,17 @@ def test_command(mocker, mock_rust_notify: 'MockRustType', caplog):
     assert run_process('/x/y/z', target='echo foobar', debounce=5, step=1) == 1
     assert mock_spawn_process.call_count == 0
     assert mock_popen.call_count == 2
-    mock_popen.assert_called_with(['echo', 'foobar'])
+    if sys.platform == 'win32':
+        mock_popen.assert_called_with(
+            ['echo', 'foobar'], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        if sys.platform == 'win32':
+        mock_popen.assert_called_with(
+            ['echo', 'foobar'], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        mock_popen.assert_called_with(['echo', 'foobar'])
     assert mock_kill.call_count == 2  # kill in loop + final kill
     assert 'watchfiles.main DEBUG: running "echo foobar" as command\n' in caplog.text
 
