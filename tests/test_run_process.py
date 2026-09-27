@@ -321,11 +321,6 @@ def test_command(mocker, mock_rust_notify: 'MockRustType', caplog):
             ['echo', 'foobar'], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
         )
     else:
-        if sys.platform == 'win32':
-        mock_popen.assert_called_with(
-            ['echo', 'foobar'], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-        )
-    else:
         mock_popen.assert_called_with(['echo', 'foobar'])
     assert mock_kill.call_count == 2  # kill in loop + final kill
     assert 'watchfiles.main DEBUG: running "echo foobar" as command\n' in caplog.text
@@ -341,7 +336,12 @@ def test_command_with_args(mocker, mock_rust_notify: 'MockRustType', caplog):
     assert run_process('/x/y/z', target='echo foobar', args=(1, 2), target_type='command', debounce=5, step=1) == 1
     assert mock_spawn_process.call_count == 0
     assert mock_popen.call_count == 2
-    mock_popen.assert_called_with(['echo', 'foobar'])
+    if sys.platform == 'win32':
+        mock_popen.assert_called_with(
+            ['echo', 'foobar'], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        mock_popen.assert_called_with(['echo', 'foobar'])
     assert mock_kill.call_count == 2  # kill in loop + final kill
     assert 'watchfiles.main WARNING: ignoring args and kwargs for "command" target\n' in caplog.text
 
