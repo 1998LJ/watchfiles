@@ -1,6 +1,6 @@
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import aclosing, contextmanager
 from pathlib import Path
 from time import sleep
 from typing import TYPE_CHECKING
@@ -232,3 +232,192 @@ async def test_awatch_interrupt_raise(mocker):
     # event is set because it's set while handling the KeyboardInterrupt
     assert stop_event.is_set()
     assert count == 1
+
+
+def test_allow_missing_filters_parent_changes(tmp_path: Path, mock_rust_notify: 'MockRustType'):
+    target = tmp_path / 'subdir' / 'new.py'
+    unrelated = tmp_path / 'unrelated.py'
+    mock_rust_notify([{(1, str(unrelated)), (1, str(target))}])
+    watcher = watch(target, allow_missing=True, watch_filter=None)
+    try:
+        assert next(watcher) == {(Change.added, str(target))}
+    finally:
+        watcher.close()
+    # The real parent (not the nonexistent target) is watched.
+    from watchfiles.main import _resolve_watch_paths
+
+    watch_paths, requested_filter = _resolve_watch_paths((target,), None, True)
+    assert watch_paths == [str(tmp_path)]
+    assert requested_filter is not None
+    assert not requested_filter(Change.added, str(unrelated))
+
+
+async def test_awatch_allow_missing_filters_parent_changes(tmp_path: Path, mock_rust_notify: 'MockRustType'):
+    target = tmp_path / 'nested' / 'new.py'
+    unrelated = tmp_path / 'other.py'
+    mock_rust_notify([{(1, str(unrelated)), (1, str(target))}])
+    async for changes in awatch(target, allow_missing=True, watch_filter=None):
+        assert changes == {(Change.added, str(target))}
+        break
+
+
+def _signal_watcher_started(monkeypatch: pytest.MonkeyPatch) -> threading.Event:
+    """Coordinate writes with actual OS watcher registration, avoiding sleep races."""
+    import watchfiles.main as watch_main
+
+    ready = threading.Event()
+    real_watcher = watch_main.RustNotify
+
+    def start(*args):
+        watcher = real_watcher(*args)
+        ready.set()
+        return watcher
+
+    monkeypatch.setattr(watch_main, 'RustNotify', start)
+    return ready
+
+
+def test_missing_file_real_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    ready = _signal_watcher_started(monkeypatch)
+    target = tmp_path / 'new.txt'
+    sibling = tmp_path / 'other.txt'
+
+    def write_files():
+        if not ready.wait(3):
+            return
+        sibling.write_text('unrelated')
+        target.write_text('tracked')
+
+    thread = threading.Thread(target=write_files)
+    thread.start()
+    watcher = watch(target, allow_missing=True, debounce=50, step=10, watch_filter=None)
+    try:
+        assert next(watcher) == {(Change.added, str(target))}
+    finally:
+        watcher.close()
+        thread.join()
+
+
+def test_missing_file_real_events_polling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    ready = _signal_watcher_started(monkeypatch)
+    target = tmp_path / 'new.txt'
+
+    def write_file():
+        if not ready.wait(3):
+            return
+        sleep(0.1)  # Allow the polling watcher to take its initial snapshot.
+        target.write_text('tracked')
+
+    thread = threading.Thread(target=write_file)
+    thread.start()
+    watcher = watch(
+        target, allow_missing=True, debounce=50, step=10, watch_filter=None, force_polling=True, poll_delay_ms=20
+    )
+    try:
+        assert (Change.added, str(target)) in next(watcher)
+    finally:
+        watcher.close()
+        thread.join()
+
+
+def test_missing_directory_real_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    ready = _signal_watcher_started(monkeypatch)
+    target_dir = tmp_path / 'created'
+    target_file = target_dir / 'new.py'
+
+    def create_directory():
+        if not ready.wait(3):
+            return
+        target_dir.mkdir()
+        # Let inotify register the new subdirectory before writing under it.
+        sleep(0.1)
+        target_file.write_text('tracked')
+
+    thread = threading.Thread(target=create_directory)
+    thread.start()
+    watcher = watch(target_dir, allow_missing=True, debounce=50, step=10, watch_filter=None)
+    try:
+        changes = next(watcher)
+        assert (Change.added, str(target_dir)) in changes
+        assert all(Path(path).is_relative_to(target_dir) for _, path in changes)
+    finally:
+        watcher.close()
+        thread.join()
+
+
+def test_allow_missing_resolves_nearest_existing_ancestor(tmp_path: Path):
+    from watchfiles.main import _resolve_watch_paths
+
+    target = tmp_path / 'no' / 'such' / 'directory'
+    sibling = tmp_path / 'no' / 'other'
+    paths, path_filter = _resolve_watch_paths((target,), None, True)
+    assert paths == [str(tmp_path)]
+    assert path_filter is not None
+    assert path_filter(Change.added, str(target))
+    assert path_filter(Change.added, str(target / 'nested' / 'file.txt'))
+    assert not path_filter(Change.added, str(sibling))
+
+
+async def test_awatch_missing_file_real_events(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    ready = _signal_watcher_started(monkeypatch)
+    target = tmp_path / 'later.py'
+
+    async def create_file():
+        if await anyio.to_thread.run_sync(ready.wait, 3):
+            target.write_text('tracked')
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(create_file)
+        async with aclosing(awatch(target, allow_missing=True, debounce=50, step=10, watch_filter=None)) as watcher:
+            async for changes in watcher:
+                assert (Change.added, str(target)) in changes
+                break
+
+
+def test_allow_missing_deduplicates_parents(tmp_path: Path):
+    from watchfiles.main import _resolve_watch_paths
+
+    paths, event_filter = _resolve_watch_paths((str(tmp_path), tmp_path / 'first', tmp_path / 'second'), None, True)
+    assert paths == [str(tmp_path)]
+    assert event_filter is not None
+    assert event_filter(Change.added, str(tmp_path / 'first'))
+    assert event_filter(Change.added, str(tmp_path / 'second'))
+
+
+def test_allow_missing_respects_user_filter(tmp_path: Path, mock_rust_notify: 'MockRustType'):
+    target = tmp_path / 'later.py'
+    raw = {(1, str(target)), (2, str(target))}
+    mock_rust_notify([raw])
+    watcher = watch(
+        target,
+        allow_missing=True,
+        watch_filter=lambda change, path: change is Change.modified,
+    )
+    try:
+        assert next(watcher) == {(Change.modified, str(target))}
+    finally:
+        watcher.close()
+
+
+def test_allow_missing_preserves_existing_path_events(tmp_path: Path, mock_rust_notify: 'MockRustType'):
+    existing = tmp_path / 'current'
+    existing.mkdir()
+    missing = tmp_path / 'new.txt'
+    existing_file = existing / 'old.txt'
+    unrelated = tmp_path / 'stray.txt'
+    mock_rust_notify([{(1, str(existing_file)), (1, str(missing)), (1, str(unrelated))}])
+    watcher = watch(existing, missing, allow_missing=True, watch_filter=None)
+    try:
+        assert next(watcher) == {(Change.added, str(existing_file)), (Change.added, str(missing))}
+    finally:
+        watcher.close()
+
+
+def test_allow_missing_opt_in_only(tmp_path: Path):
+    missing = tmp_path / 'missing.txt'
+    watcher = watch(missing)
+    try:
+        with pytest.raises(FileNotFoundError):
+            next(watcher)
+    finally:
+        watcher.close()

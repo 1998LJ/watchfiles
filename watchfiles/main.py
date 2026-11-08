@@ -50,6 +50,56 @@ if TYPE_CHECKING:
         def is_set(self) -> bool: ...
 
 
+def _resolve_watch_paths(
+    paths: tuple[Path | str, ...],
+    watch_filter: Callable[[Change, str], bool] | None,
+    allow_missing: bool,
+) -> tuple[list[str], Callable[[Change, str], bool] | None]:
+    """Watch an existing ancestor for missing paths and discard unrelated events.
+
+    The Rust watcher only accepts existing paths; keeping this logic here
+    means the same behavior works with native events and forced polling.
+    """
+    if not allow_missing:
+        return [str(p) for p in paths], watch_filter
+
+    watch_paths: list[str] = []
+    requested: list[tuple[Path, bool]] = []
+    missing = False
+    for raw_path in paths:
+        path = Path(os.path.abspath(raw_path))
+        if path.exists():
+            watch_paths.append(str(raw_path))
+            requested.append((path, path.is_dir()))
+        else:
+            missing = True
+            requested.append((path, True))
+            parent = path.parent
+            while not parent.exists():
+                parent = parent.parent
+            watch_paths.append(str(parent))
+
+    if not missing:
+        return watch_paths, watch_filter
+
+    def filter_requested(change: Change, changed_path: str) -> bool:
+        changed = Path(os.path.abspath(changed_path))
+        if not any(changed == path or (is_dir and changed.is_relative_to(path)) for path, is_dir in requested):
+            return False
+        return watch_filter is None or watch_filter(change, changed_path)
+
+    # Different spellings of the same existing parent should not register
+    # duplicate OS watches (for example, a relative path plus an absolute one).
+    unique_paths: list[str] = []
+    seen: set[Path] = set()
+    for watch_path in watch_paths:
+        normalized = Path(os.path.abspath(watch_path))
+        if normalized not in seen:
+            seen.add(normalized)
+            unique_paths.append(watch_path)
+    return unique_paths, filter_requested
+
+
 def watch(
     *paths: Path | str,
     watch_filter: Callable[['Change', str], bool] | None = DefaultFilter(),  # noqa: B008
@@ -64,6 +114,7 @@ def watch(
     poll_delay_ms: int = 300,
     recursive: bool = True,
     ignore_permission_denied: bool | None = None,
+    allow_missing: bool = False,
 ) -> Generator[set[FileChange], None, None]:
     """
     Watch one or more paths and yield a set of changes whenever files change.
@@ -109,6 +160,9 @@ def watch(
             top-level directory, default is `True`.
         ignore_permission_denied: if `True`, will ignore permission denied errors, otherwise will raise them by default.
             Setting the `WATCHFILES_IGNORE_PERMISSION_DENIED` environment variable will set this value too.
+        allow_missing: if `True`, watch the nearest existing parent for missing paths, and report only changes
+            at or within the originally requested paths. The default is `False`, which raises `FileNotFoundError`
+            for missing paths. Newly created directory contents are watched if `recursive=True`.
 
     Yields:
         The generator yields sets of [`FileChange`][watchfiles.main.FileChange]s.
@@ -124,9 +178,8 @@ def watch(
     poll_delay_ms = _default_poll_delay_ms(poll_delay_ms)
     ignore_permission_denied = _default_ignore_permission_denied(ignore_permission_denied)
     debug = _default_debug(debug)
-    with RustNotify(
-        [str(p) for p in paths], debug, force_polling, poll_delay_ms, recursive, ignore_permission_denied
-    ) as watcher:
+    watch_paths, watch_filter = _resolve_watch_paths(paths, watch_filter, allow_missing)
+    with RustNotify(watch_paths, debug, force_polling, poll_delay_ms, recursive, ignore_permission_denied) as watcher:
         while True:
             raw_changes = watcher.watch(debounce, step, rust_timeout, stop_event)
             if raw_changes == 'timeout':
@@ -165,6 +218,7 @@ async def awatch(  # C901
     poll_delay_ms: int = 300,
     recursive: bool = True,
     ignore_permission_denied: bool | None = None,
+    allow_missing: bool = False,
 ) -> AsyncGenerator[set[FileChange], None]:
     """
     Asynchronous equivalent of [`watch`][watchfiles.watch] using threads to wait for changes.
@@ -197,6 +251,7 @@ async def awatch(  # C901
             top-level directory, default is `True`.
         ignore_permission_denied: if `True`, will ignore permission denied errors, otherwise will raise them by default.
             Setting the `WATCHFILES_IGNORE_PERMISSION_DENIED` environment variable will set this value too.
+        allow_missing: matches the same argument of [`watch`][watchfiles.watch].
 
     Yields:
         The generator yields sets of [`FileChange`][watchfiles.main.FileChange]s.
@@ -258,9 +313,8 @@ async def awatch(  # C901
     poll_delay_ms = _default_poll_delay_ms(poll_delay_ms)
     ignore_permission_denied = _default_ignore_permission_denied(ignore_permission_denied)
     debug = _default_debug(debug)
-    with RustNotify(
-        [str(p) for p in paths], debug, force_polling, poll_delay_ms, recursive, ignore_permission_denied
-    ) as watcher:
+    watch_paths, watch_filter = _resolve_watch_paths(paths, watch_filter, allow_missing)
+    with RustNotify(watch_paths, debug, force_polling, poll_delay_ms, recursive, ignore_permission_denied) as watcher:
         timeout = _calc_async_timeout(rust_timeout)
         CancelledError = anyio.get_cancelled_exc_class()
 

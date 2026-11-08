@@ -35,6 +35,22 @@ Otherwise, you can install from source which requires Rust stable to be installe
 
 ## Usage
 
+### Watching paths that do not exist yet
+
+Pass `allow_missing=True` to `watch` or `awatch` to monitor a file or directory
+before it is created. The nearest existing parent directory is watched, but
+only changes within the requested path are reported. It works with native
+file notifications and forced polling; the default remains to raise an error
+for missing paths.
+
+```python
+from watchfiles import watch
+
+for changes in watch('future.log', allow_missing=True):
+    print(changes)
+```
+
+
 Here are some examples of what **watchfiles** can do:
 
 ### `watch` Usage
