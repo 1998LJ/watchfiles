@@ -32,6 +32,7 @@ jobs:
           - "3.14t"
           - "3.15"
           - "pypy3.11"
+          - "pypy3.12"
         exclude:
           - rust-version: "1.85"
             os: macos
@@ -240,7 +241,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
-          args: --release --out dist --interpreter pypy3.11
+          args: --release --out dist --interpreter pypy3.11 pypy3.12
 
       - run: ${{ matrix.ls || 'ls -lh' }} dist/
 
